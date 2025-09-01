@@ -26,12 +26,7 @@ rsi_period = st.slider("RSI-Periode", 5, 30, 14)
 if st.button("🔍 Analyse starten"):
     end = datetime.datetime.now()
     start = end - datetime.timedelta(days=100)
-    df = api.get_bars(
-    symbol,
-    timeframe,
-    start=start.strftime("%Y-%m-%d"),
-    end=end.strftime("%Y-%m-%d")
-).df
+ df = api.get_bars(symbol, timeframe, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d")).df
     df = df[df['symbol'] == symbol]
 
     df['MA_Short'] = df['close'].rolling(ma_short).mean()
