@@ -1,118 +1,98 @@
+# trading_bot_app/app.py
+
 import streamlit as st
 import pandas as pd
-import datetime
-import os
-from ta.momentum import RSIIndicator
-from ta.volatility import BollingerBands
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.data.enums import StockFeed
+from datetime import datetime, timedelta
+from ta.volatility import BollingerBands
+import os
 
-# ⛔ Umgebungsvariablen (Render → Environment)
+# ⭐ ENV-VARIABLEN von Render verwenden
 API_KEY = os.getenv("ALPACA_API_KEY")
-API_SECRET = os.getenv("ALPACA_SECRET_KEY")
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
-# Alpaca Clients
-stock_client = StockHistoricalDataClient(API_KEY, API_SECRET)
-crypto_client = CryptoHistoricalDataClient()
-trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
+# === UI ===
+st.set_page_config(page_title="Trading Bot", layout="wide")
+st.title("💰 Trading Bot mit Bollinger Bands")
 
-# Streamlit App
-st.title("📈 Automatisierter Trading-Bot (MA/RSI + Bollinger)")
+symbol = st.selectbox("Asset auswählen", ["AAPL", "TSLA", "MSFT", "BTC/USD"])
+timeframe_str = st.selectbox("Zeitintervall", ["1Min", "5Min", "15Min", "1Hour", "1Day"])
+period_days = st.slider("Vergangene Tage", 1, 60, 10)
 
-symbol = st.selectbox("🔍 Tickersymbol eingeben", ["AAPL", "BTC/USD"])
-interval = st.selectbox("🕒 Zeitrahmen", ["1D", "1H", "15Min"])
-short_ma = st.slider("📉 Kurzfristiger MA", 5, 20, 10)
-long_ma = st.slider("📈 Langfristiger MA", 20, 100, 50)
-rsi_period = st.slider("📊 RSI-Periode", 7, 21, 14)
-quantity = st.number_input("📦 Order-Menge", min_value=1, value=1)
+# === Zeitkonfiguration ===
+now = datetime.utcnow()
+start_date = now - timedelta(days=period_days)
 
-if st.button("🔍 Analyse starten"):
-    end = datetime.datetime.now()
-    start = end - datetime.timedelta(days=90)
-
+# === Daten abrufen ===
+def fetch_data(symbol, timeframe_str, start_date, now):
     tf_map = {
-        "1D": TimeFrame.Day,
-        "1H": TimeFrame.Hour,
-        "15Min": TimeFrame.Minute
+        "1Min": TimeFrame.Minute,
+        "5Min": TimeFrame(5, TimeFrame.Unit.Minute),
+        "15Min": TimeFrame(15, TimeFrame.Unit.Minute),
+        "1Hour": TimeFrame.Hour,
+        "1Day": TimeFrame.Day
     }
+    timeframe = tf_map[timeframe_str]
 
-    tf = tf_map[interval]
-
-    if symbol == "AAPL":
-        request_params = StockBarsRequest(
-            symbol_or_symbols=symbol,
-            start=start,
-            end=end,
-            timeframe=tf
-        )
-        bars = stock_client.get_stock_bars(request_params).df
-        data = bars[bars['symbol'] == symbol]
-    else:
-        request_params = CryptoBarsRequest(
-            symbol_or_symbols=symbol,
-            start=start,
-            end=end,
-            timeframe=tf
-        )
+    if "/" in symbol:  # Crypto
+        crypto_client = CryptoHistoricalDataClient()
+        request_params = CryptoBarsRequest(symbols=[symbol], timeframe=timeframe, start=start_date, end=now)
         bars = crypto_client.get_crypto_bars(request_params).df
-        data = bars[bars['symbol'] == symbol]
+    else:  # Stocks
+        stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY, feed=StockFeed.IEX)
+        request_params = StockBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe, start=start_date, end=now)
+        bars = stock_client.get_stock_bars(request_params).df
 
-    if data.empty:
-        st.error("Keine Daten gefunden.")
-        st.stop()
+    if bars.empty:
+        st.warning("Keine Daten verfügbar für diese Auswahl.")
+        return pd.DataFrame()
 
-    # Signal-Strategie
-    signal = "HOLD"
+    bars = bars[bars.index.get_level_values("symbol") == symbol]
+    bars = bars.reset_index()
+    return bars
 
-    if symbol == "AAPL":
-        data["MA_Short"] = data["close"].rolling(window=short_ma).mean()
-        data["MA_Long"] = data["close"].rolling(window=long_ma).mean()
-        rsi = RSIIndicator(close=data["close"], window=rsi_period)
-        data["RSI"] = rsi.rsi()
+# === Bollinger Bands Strategie ===
+def bollinger_strategy(df):
+    if df.empty:
+        return df, []
 
-        if (
-            data["MA_Short"].iloc[-1] > data["MA_Long"].iloc[-1]
-            and data["RSI"].iloc[-1] < 70
-        ):
-            signal = "BUY"
-        elif (
-            data["MA_Short"].iloc[-1] < data["MA_Long"].iloc[-1]
-            and data["RSI"].iloc[-1] > 30
-        ):
-            signal = "SELL"
+    indicator_bb = BollingerBands(close=df["close"], window=20, window_dev=2)
+    df["bb_m"] = indicator_bb.bollinger_mavg()
+    df["bb_h"] = indicator_bb.bollinger_hband()
+    df["bb_l"] = indicator_bb.bollinger_lband()
 
-        st.line_chart(data[["MA_Short", "MA_Long", "close"]])
-        st.line_chart(data["RSI"])
+    signals = []
+    for i in range(1, len(df)):
+        if df["close"].iloc[i - 1] > df["bb_l"].iloc[i - 1] and df["close"].iloc[i] < df["bb_l"].iloc[i]:
+            signals.append((df["timestamp"].iloc[i], "BUY"))
+        elif df["close"].iloc[i - 1] < df["bb_h"].iloc[i - 1] and df["close"].iloc[i] > df["bb_h"].iloc[i]:
+            signals.append((df["timestamp"].iloc[i], "SELL"))
 
-    elif symbol == "BTC/USD":
-        bb = BollingerBands(close=data["close"], window=20, window_dev=2)
-        data["bb_mavg"] = bb.bollinger_mavg()
-        data["bb_upper"] = bb.bollinger_hband()
-        data["bb_lower"] = bb.bollinger_lband()
+    return df, signals
 
-        if data["close"].iloc[-1] < data["bb_lower"].iloc[-1]:
-            signal = "BUY"
-        elif data["close"].iloc[-1] > data["bb_upper"].iloc[-1]:
-            signal = "SELL"
+# === Hauptlogik ===
+data = fetch_data(symbol, timeframe_str, start_date, now)
 
-        st.line_chart(data[["close", "bb_upper", "bb_lower"]])
+if not data.empty:
+    data, signals = bollinger_strategy(data)
 
-    st.subheader(f"Aktueller Handelssignal für {symbol}: 📉 {signal}")
+    st.subheader(f"{symbol} Kursdaten mit Bollinger Bands")
+    st.line_chart(data.set_index("timestamp")["close"], height=300)
+    st.line_chart(data.set_index("timestamp")[["bb_m", "bb_h", "bb_l"]], height=300)
 
-    if signal in ["BUY", "SELL"]:
-        order = MarketOrderRequest(
-            symbol=symbol,
-            qty=quantity,
-            side=OrderSide.BUY if signal == "BUY" else OrderSide.SELL,
-            time_in_force=TimeInForce.DAY
-        )
-        try:
-            trading_client.submit_order(order)
-            st.success(f"✅ Order ausgeführt: {signal} {quantity} {symbol}")
-        except Exception as e:
-            st.error(f"❌ Fehler beim Ordern: {e}")
+    if signals:
+        st.success(f"{len(signals)} Handelssignale gefunden:")
+        for ts, sig in signals:
+            st.write(f"{sig} am {ts}")
+    else:
+        st.info("Keine Handelssignale gefunden.")
+else:
+    st.stop()
+
+# === DEBUG ===
+with st.expander("Rohdaten anzeigen"):
+    st.dataframe(data)
