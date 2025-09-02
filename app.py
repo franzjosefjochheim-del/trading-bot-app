@@ -17,7 +17,7 @@ if not API_KEY or not SECRET_KEY:
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version='v2')
 
-symbol = st.text_input("🪙 Tickersymbol eingeben", value="AAPL")
+symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
 timeframe = st.selectbox("Zeitrahmen", ["1Min", "5Min", "15Min", "1D"], index=3)
 ma_short = st.slider("Kurzfristiger MA", 5, 20, 10)
 ma_long = st.slider("Langfristiger MA", 30, 100, 50)
@@ -26,6 +26,7 @@ rsi_period = st.slider("RSI-Periode", 5, 30, 14)
 if st.button("🔍 Analyse starten"):
     end = datetime.datetime.now()
     start = end - datetime.timedelta(days=100)
+
     df = api.get_bars(
         symbol,
         timeframe,
@@ -44,8 +45,10 @@ if st.button("🔍 Analyse starten"):
     df['RSI'] = 100 - (100 / (1 + rs))
 
     st.line_chart(df[['close', 'MA_Short', 'MA_Long']].dropna())
-    st.line_chart(df[['RSI']].dropna())
+    st.line_chart(df['RSI'].dropna())
 
     latest = df.iloc[-1]
-    signal = "📉 SELL" if latest.MA_Short < latest.MA_Long or latest.RSI < 40 else "📈 BUY" if latest.MA_Short > latest.MA_Long and latest.RSI > 50 else "⚠️ HOLD"
+    signal = "📉 SELL" if latest.MA_Short < latest.MA_Long or latest.RSI < 40 else \
+             "☑️ BUY" if latest.MA_Short > latest.MA_Long and latest.RSI > 50 else \
+             "⚠️ HOLD"
     st.subheader(f"Aktueller Handelssignal für {symbol}: {signal}")
