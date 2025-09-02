@@ -32,6 +32,7 @@ if st.button("🔍 Analyse starten"):
         timeframe,
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d")
+        feed='iex'
     ).df
 
     df = df[df['symbol'] == symbol]
