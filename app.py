@@ -1,114 +1,91 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-
-from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
-from alpaca.data.timeframe import TimeFrame
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide
+import datetime as dt
+import matplotlib.pyplot as plt
 from ta.volatility import BollingerBands
-
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+import yfinance as yf
+import pytz
 import os
 
-# ⏱ Zeitintervall
-TIMEFRAME = TimeFrame.Hour  # kurzfristiger als 1Day
+# -------------------------------
+# CONFIG
+# -------------------------------
+st.set_page_config(page_title="Trading Bot mit Bollinger Bands", page_icon="📈")
 
-# 🔐 Umgebungsvariablen
-API_KEY = os.getenv("ALPACA_API_KEY")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-
-# 🧠 Clients
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
-stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-crypto_client = CryptoHistoricalDataClient()
-
-# 🎯 Funktion zum Abrufen der Daten
-def get_data(symbol, start, end):
-    if symbol == "BTC/USD":
-        request = CryptoBarsRequest(
-            symbol_or_symbols="BTC/USD",
-            timeframe=TIMEFRAME,
-            start=start,
-            end=end
-        )
-        bars = crypto_client.get_crypto_bars(request).df
-        df = bars[bars['symbol'] == 'BTC/USD'].copy()
-    else:
-        request = StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=TIMEFRAME,
-            start=start,
-            end=end,
-            feed='iex'  # FIXED: kein Enum
-        )
-        try:
-            bars = stock_client.get_stock_bars(request).df
-            df = bars[bars['symbol'] == symbol].copy()
-        except Exception as e:
-            st.error(f"Fehler beim Abrufen von {symbol}-Daten: {e}")
-            return pd.DataFrame()
-
-    df = df.sort_index()
-    df['close'] = pd.to_numeric(df['close'], errors='coerce')
-    df.dropna(subset=['close'], inplace=True)
-    return df
-
-# 📈 Bollinger Bands Strategie
-def apply_bollinger_strategy(df):
-    indicator = BollingerBands(close=df['close'], window=20, window_dev=2)
-    df['bb_mavg'] = indicator.bollinger_mavg()
-    df['bb_upper'] = indicator.bollinger_hband()
-    df['bb_lower'] = indicator.bollinger_lband()
-
-    df['signal'] = 0
-    df.loc[df['close'] < df['bb_lower'], 'signal'] = 1  # Kaufen
-    df.loc[df['close'] > df['bb_upper'], 'signal'] = -1  # Verkaufen
-
-    return df
-
-# 🛒 Order senden
-def submit_order(symbol, qty, side):
-    try:
-        order = MarketOrderRequest(
-            symbol=symbol.replace("/", ""),  # BTC/USD → BTCUSD
-            qty=qty,
-            side=side,
-            time_in_force="gtc"
-        )
-        trading_client.submit_order(order)
-        st.success(f"{side.upper()} order submitted for {symbol} ({qty})")
-    except Exception as e:
-        st.error(f"Order konnte nicht gesendet werden: {e}")
-
-# 🎨 Streamlit UI
-st.set_page_config(layout="wide")
 st.title("📊 Trading Bot mit Bollinger Bands")
 
-symbol = st.selectbox("Wähle ein Symbol", ["AAPL", "MSFT", "TSLA", "BTC/USD"])
-start_date = datetime.now() - timedelta(days=30)
-end_date = datetime.now()
+# 🧠 Setze deine Alpaca API Keys (ggf. über .env oder Render Environment)
+ALPACA_API_KEY = os.getenv("APCA_API_KEY_ID")
+ALPACA_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
+client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 
-if st.button("📈 Analyse starten"):
-    data = get_data(symbol, start_date, end_date)
+# -------------------------------
+# FUNKTION: Daten holen
+# -------------------------------
+def get_data(symbol: str, start_date: dt.date, end_date: dt.date):
+    if symbol == "BTC/USD" or symbol == "BTC-USD":
+        # Krypto von Yahoo Finance
+        return yf.download("BTC-USD", start=start_date, end=end_date)
 
-    if data.empty:
-        st.warning("Keine Daten verfügbar.")
     else:
-        df = apply_bollinger_strategy(data)
+        # Aktien von Alpaca
+        request = StockBarsRequest(
+            symbol=symbol,
+            start=pd.Timestamp(start_date, tz=pytz.UTC),
+            end=pd.Timestamp(end_date, tz=pytz.UTC),
+            timeframe=TimeFrame.Day
+        )
+        bars = client.get_stock_bars(request).df
+        if bars.empty:
+            return pd.DataFrame()
+        return bars.reset_index().set_index("timestamp")
 
-        st.subheader("Bollinger Bands")
-        st.line_chart(df[['close', 'bb_upper', 'bb_lower']])
 
-        latest_signal = df['signal'].iloc[-1]
-        st.write(f"Aktuelles Signal: {'🟢 Kaufen' if latest_signal == 1 else '🔴 Verkaufen' if latest_signal == -1 else '⚪️ Halten'}")
+# -------------------------------
+# FUNKTION: Plot Bollinger Bands
+# -------------------------------
+def plot_bollinger_bands(data: pd.DataFrame, symbol: str):
+    indicator = BollingerBands(close=data["close"], window=20, window_dev=2)
+    data['bb_bbm'] = indicator.bollinger_mavg()
+    data['bb_bbh'] = indicator.bollinger_hband()
+    data['bb_bbl'] = indicator.bollinger_lband()
 
-        if latest_signal == 1:
-            if st.button("Jetzt kaufen"):
-                submit_order(symbol, 1, OrderSide.BUY)
+    st.subheader(f"Bollinger Bands für {symbol}")
+    fig, ax = plt.subplots()
+    ax.plot(data.index, data["close"], label="Kurs", color="blue")
+    ax.plot(data.index, data["bb_bbm"], label="BB Mitte", linestyle="--")
+    ax.plot(data.index, data["bb_bbh"], label="BB Hoch", linestyle="--")
+    ax.plot(data.index, data["bb_bbl"], label="BB Tief", linestyle="--")
+    ax.fill_between(data.index, data["bb_bbl"], data["bb_bbh"], alpha=0.1)
+    ax.set_title(f"{symbol} Bollinger Bands")
+    ax.legend()
+    st.pyplot(fig)
 
-        elif latest_signal == -1:
-            if st.button("Jetzt verkaufen"):
-                submit_order(symbol, 1, OrderSide.SELL)
+# -------------------------------
+# UI
+# -------------------------------
+symbol = st.selectbox("Wähle ein Symbol", ["AAPL", "BTC/USD"])
+start_date = st.date_input("Startdatum", dt.date.today() - dt.timedelta(days=180))
+end_date = st.date_input("Enddatum", dt.date.today())
+
+if st.button("🧪 Analyse starten"):
+    try:
+        st.info(f"Hole Daten für {symbol}...")
+        df = get_data(symbol, start_date, end_date)
+
+        if df.empty:
+            st.warning("Keine Daten verfügbar.")
+        else:
+            # Vereinheitliche Spaltennamen
+            if 'Close' in df.columns:
+                df.rename(columns={'Close': 'close'}, inplace=True)
+            elif 'close' not in df.columns:
+                raise ValueError("Spalte 'close' fehlt im DataFrame.")
+
+            plot_bollinger_bands(df, symbol)
+
+    except Exception as e:
+        st.error(f"Fehler beim Abrufen von {symbol}-Daten: {e}")
