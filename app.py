@@ -35,6 +35,8 @@ if st.button("🔎 Analyse starten"):
         feed='iex'
     ).df
 
+    # Keine Filterung nach df['symbol'] nötig – entfernt!
+
     df['MA_Short'] = df['close'].rolling(ma_short).mean()
     df['MA_Long'] = df['close'].rolling(ma_long).mean()
 
