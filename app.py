@@ -17,7 +17,7 @@ if not API_KEY or not SECRET_KEY:
 
 api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version='v2')
 
-symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
+symbol = st.text_input("🔎 Tickersymbol eingeben", value="AAPL")
 timeframe = st.selectbox("Zeitrahmen", ["1Min", "5Min", "15Min", "1D"], index=3)
 ma_short = st.slider("Kurzfristiger MA", 5, 20, 10)
 ma_long = st.slider("Langfristiger MA", 30, 100, 50)
@@ -31,7 +31,7 @@ if st.button("🔍 Analyse starten"):
         symbol,
         timeframe,
         start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d")
+        end=end.strftime("%Y-%m-%d"),
         feed='iex'
     ).df
 
@@ -39,6 +39,7 @@ if st.button("🔍 Analyse starten"):
 
     df['MA_Short'] = df['close'].rolling(ma_short).mean()
     df['MA_Long'] = df['close'].rolling(ma_long).mean()
+
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(rsi_period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(rsi_period).mean()
@@ -46,10 +47,8 @@ if st.button("🔍 Analyse starten"):
     df['RSI'] = 100 - (100 / (1 + rs))
 
     st.line_chart(df[['close', 'MA_Short', 'MA_Long']].dropna())
-    st.line_chart(df['RSI'].dropna())
+    st.line_chart(df[['RSI']].dropna())
 
     latest = df.iloc[-1]
-    signal = "📉 SELL" if latest.MA_Short < latest.MA_Long or latest.RSI < 40 else \
-             "☑️ BUY" if latest.MA_Short > latest.MA_Long and latest.RSI > 50 else \
-             "⚠️ HOLD"
+    signal = "📉 SELL" if latest.MA_Short < latest.MA_Long or latest.RSI < 40 else "📈 BUY" if latest.MA_Short > latest.MA_Long and latest.RSI > 50 else "⚠️ HOLD"
     st.subheader(f"Aktueller Handelssignal für {symbol}: {signal}")
