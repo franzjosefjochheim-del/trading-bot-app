@@ -1,6 +1,5 @@
 streamlit
-pandas
-numpy
+alpaca-trade-api
 matplotlib
+pandas
 python-dotenv
-alpaca-py
