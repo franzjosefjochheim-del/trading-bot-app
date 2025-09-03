@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -20,20 +20,20 @@ BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 
-# Streamlit-Seitenlayout
+# Streamlit-Konfiguration
 st.set_page_config(page_title="Trading Bot (MA + RSI)", layout="centered")
-st.title("📉 Automatisierter Trading-Bot (MA + RSI)")
+st.title("📈 Automatisierter Trading-Bot (MA + RSI)")
 
-# Benutzeroberfläche
+# Benutzer-Eingaben
 symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
 
-# ✅ RICHTIGE TimeFrame-Zuweisung
+# ⏱️ Zeitrahmen (nun korrekt definiert)
 timeframes = {
-    "1Min": TimeFrame.Minute,
-    "5Min": TimeFrame.Minute5,
-    "15Min": TimeFrame.Minute15,
-    "1H": TimeFrame.Hour,
-    "1D": TimeFrame.Day,
+    "1Min": TimeFrame(1, TimeFrameUnit.Minute),
+    "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+    "15Min": TimeFrame(15, TimeFrameUnit.Minute),
+    "1H": TimeFrame(1, TimeFrameUnit.Hour),
+    "1D": TimeFrame(1, TimeFrameUnit.Day),
 }
 timeframe_str = st.selectbox("🕰️ Zeitrahmen", list(timeframes.keys()))
 timeframe = timeframes[timeframe_str]
@@ -41,8 +41,9 @@ timeframe = timeframes[timeframe_str]
 short_window = st.slider("📉 Kurzfristiger MA", 5, 50, 10)
 long_window = st.slider("📈 Langfristiger MA", 20, 200, 50)
 rsi_period = st.slider("📊 RSI-Periode", 5, 30, 14)
-qty = st.number_input("📃 Order-Menge", min_value=1, value=1)
+qty = st.number_input("📦 Order-Menge", min_value=1, value=1)
 
+# Analyse starten
 if st.button("🔍 Analyse starten") and symbol:
     try:
         end_date = datetime.now(timezone.utc)
@@ -58,7 +59,7 @@ if st.button("🔍 Analyse starten") and symbol:
         df = bars.data.get(symbol)
 
         if df is None or df.empty:
-            st.error("❌ Keine Daten gefunden. Möglicherweise ungültiges Symbol oder Zeitrahmen.")
+            st.error("❌ Keine Daten gefunden. Ungültiges Symbol oder Zeitrahmen.")
         else:
             df.index = pd.to_datetime(df.timestamp)
             df["SMA_short"] = df.close.rolling(window=short_window).mean()
@@ -73,19 +74,19 @@ if st.button("🔍 Analyse starten") and symbol:
             rs = avg_gain / avg_loss
             df["RSI"] = 100 - (100 / (1 + rs))
 
-            # Charts anzeigen
-            st.subheader(f"Kursverlauf & Indikatoren für {symbol}")
+            # Chart anzeigen
+            st.subheader(f"Kursdaten & Indikatoren für {symbol}")
             fig, ax = plt.subplots(figsize=(10, 6))
             ax.plot(df.close, label="Kurs")
             ax.plot(df.SMA_short, label=f"MA {short_window}")
             ax.plot(df.SMA_long, label=f"MA {long_window}")
-            ax.set_title(f"{symbol} Kursdaten")
+            ax.set_title(f"{symbol} Kursverlauf")
             ax.legend()
             st.pyplot(fig)
 
             st.line_chart(df["RSI"])
 
-            # Trading-Signale
+            # Strategie-Signal
             last_row = df.iloc[-1]
             prev_row = df.iloc[-2]
             signal = ""
