@@ -1,124 +1,127 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
-from datetime import datetime, timedelta, timezone
+import matplotlib.pyplot as plt
+import datetime
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 import os
 
-# Alpaca API-Zugangsdaten
-API_KEY = os.getenv("ALPACA_API_KEY")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+# Alpaca API Keys aus Umgebungsvariablen laden (.env oder Render-Konfiguration)
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
-# Alpaca-Clients
-data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
+# Streamlit UI
+st.set_page_config(page_title="Trading-Bot (MA + RSI)", layout="centered")
 
-# Streamlit-Konfiguration
-st.set_page_config(page_title="Trading Bot (MA + RSI)", layout="centered")
 st.title("📈 Automatisierter Trading-Bot (MA + RSI)")
+symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL").upper()
 
-# Benutzer-Eingaben
-symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
-
-# ⏱️ Zeitrahmen (nun korrekt definiert)
 timeframes = {
-    "1Min": TimeFrame(1, TimeFrameUnit.Minute),
-    "5Min": TimeFrame(5, TimeFrameUnit.Minute),
-    "15Min": TimeFrame(15, TimeFrameUnit.Minute),
-    "1H": TimeFrame(1, TimeFrameUnit.Hour),
-    "1D": TimeFrame(1, TimeFrameUnit.Day),
+    "1Min": TimeFrame.Minute,
+    "5Min": TimeFrame.Minute,
+    "15Min": TimeFrame.Minute,
+    "1H": TimeFrame.Hour,
+    "1D": TimeFrame.Day
 }
-timeframe_str = st.selectbox("🕰️ Zeitrahmen", list(timeframes.keys()))
-timeframe = timeframes[timeframe_str]
+selected_tf = st.selectbox("⏱ Zeitrahmen", list(timeframes.keys()))
+timeframe = timeframes[selected_tf]
 
-short_window = st.slider("📉 Kurzfristiger MA", 5, 50, 10)
-long_window = st.slider("📈 Langfristiger MA", 20, 200, 50)
-rsi_period = st.slider("📊 RSI-Periode", 5, 30, 14)
-qty = st.number_input("📦 Order-Menge", min_value=1, value=1)
+short_window = st.slider("📉 Kurzfristiger MA", min_value=5, max_value=50, value=10)
+long_window = st.slider("📈 Langfristiger MA", min_value=20, max_value=200, value=50)
+rsi_period = st.slider("📊 RSI-Periode", min_value=5, max_value=30, value=14)
+order_qty = st.number_input("🍩 Order-Menge", min_value=1, step=1, value=1)
 
-# Analyse starten
-if st.button("🔍 Analyse starten") and symbol:
+if st.button("🔍 Analyse starten"):
+
     try:
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=60)
+        # Alpaca Clients
+        data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
 
+        # Zeitbereich
+        end_date = datetime.datetime.utcnow()
+        start_date = end_date - datetime.timedelta(days=100)
+
+        # Daten anfragen mit feed='iex'
         request_params = StockBarsRequest(
             symbol_or_symbols=[symbol],
             timeframe=timeframe,
             start=start_date,
             end=end_date,
+            feed="iex"  # kostenloses Feed
         )
-        bars = data_client.get_stock_bars(request_params)
-        df = bars.data.get(symbol)
 
-        if df is None or df.empty:
-            st.error("❌ Keine Daten gefunden. Ungültiges Symbol oder Zeitrahmen.")
+        bars = data_client.get_stock_bars(request_params).df
+
+        if bars.empty:
+            st.error("⚠️ Keine Daten gefunden. Versuche einen anderen Zeitraum oder Ticker.")
         else:
-            df.index = pd.to_datetime(df.timestamp)
-            df["SMA_short"] = df.close.rolling(window=short_window).mean()
-            df["SMA_long"] = df.close.rolling(window=long_window).mean()
+            bars = bars[bars.symbol == symbol]
 
-            # RSI berechnen
-            delta = df.close.diff()
+            bars['SMA_short'] = bars['close'].rolling(window=short_window).mean()
+            bars['SMA_long'] = bars['close'].rolling(window=long_window).mean()
+
+            delta = bars['close'].diff()
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
-            avg_gain = gain.rolling(rsi_period).mean()
-            avg_loss = loss.rolling(rsi_period).mean()
+            avg_gain = gain.rolling(window=rsi_period).mean()
+            avg_loss = loss.rolling(window=rsi_period).mean()
             rs = avg_gain / avg_loss
-            df["RSI"] = 100 - (100 / (1 + rs))
+            bars['RSI'] = 100 - (100 / (1 + rs))
 
-            # Chart anzeigen
-            st.subheader(f"Kursdaten & Indikatoren für {symbol}")
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(df.close, label="Kurs")
-            ax.plot(df.SMA_short, label=f"MA {short_window}")
-            ax.plot(df.SMA_long, label=f"MA {long_window}")
-            ax.set_title(f"{symbol} Kursverlauf")
+            # Plot
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(bars.index, bars['close'], label='Kurs')
+            ax.plot(bars.index, bars['SMA_short'], label=f'MA {short_window}')
+            ax.plot(bars.index, bars['SMA_long'], label=f'MA {long_window}')
+            ax.set_title(f"{symbol} - Kurs mit MA")
             ax.legend()
             st.pyplot(fig)
 
-            st.line_chart(df["RSI"])
+            # RSI Plot
+            fig2, ax2 = plt.subplots(figsize=(12, 3))
+            ax2.plot(bars.index, bars['RSI'], color='purple', label='RSI')
+            ax2.axhline(70, color='red', linestyle='--', label='Overbought')
+            ax2.axhline(30, color='green', linestyle='--', label='Oversold')
+            ax2.set_title("RSI")
+            ax2.legend()
+            st.pyplot(fig2)
 
-            # Strategie-Signal
-            last_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
-            signal = ""
-
+            # Signal logik
+            last = bars.iloc[-1]
+            signal = None
             if (
-                prev_row["SMA_short"] < prev_row["SMA_long"]
-                and last_row["SMA_short"] > last_row["SMA_long"]
-                and last_row["RSI"] < 70
+                last['SMA_short'] > last['SMA_long']
+                and last['RSI'] < 30
             ):
-                signal = "BUY"
+                signal = "buy"
             elif (
-                prev_row["SMA_short"] > prev_row["SMA_long"]
-                and last_row["SMA_short"] < last_row["SMA_long"]
-                and last_row["RSI"] > 30
+                last['SMA_short'] < last['SMA_long']
+                and last['RSI'] > 70
             ):
-                signal = "SELL"
+                signal = "sell"
 
             if signal:
-                st.success(f"📢 Signal erkannt: {signal}")
+                st.success(f"📢 Signal erkannt: {signal.upper()}")
+
                 try:
-                    order = MarketOrderRequest(
+                    order_data = MarketOrderRequest(
                         symbol=symbol,
-                        qty=qty,
-                        side=OrderSide.BUY if signal == "BUY" else OrderSide.SELL,
-                        time_in_force=TimeInForce.DAY,
+                        qty=order_qty,
+                        side=OrderSide.BUY if signal == "buy" else OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY
                     )
-                    response = trading_client.submit_order(order)
-                    st.success(f"✅ Order ausgeführt: {response.id}")
+                    order = trading_client.submit_order(order_data)
+                    st.success(f"✅ Order ausgeführt: {order.side} {order.qty} {order.symbol}")
                 except Exception as e:
-                    st.error(f"❌ Fehler bei Orderausführung: {e}")
+                    st.error(f"❌ Order-Fehler: {e}")
             else:
-                st.info("ℹ️ Kein klares Signal erkannt – keine Aktion durchgeführt.")
+                st.info("ℹ️ Kein klares Kaufs- oder Verkaufssignal.")
 
     except Exception as e:
         st.error(f"❌ Fehler: {e}")
