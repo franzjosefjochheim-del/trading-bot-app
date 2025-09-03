@@ -1,127 +1,109 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import datetime
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from datetime import datetime, timedelta
+import pytz
 import os
+from dotenv import load_dotenv
+import ta
 
-# Alpaca API Keys aus Umgebungsvariablen laden (.env oder Render-Konfiguration)
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+# 🔐 Lade Umgebungsvariablen
+load_dotenv()
+API_KEY = os.getenv("ALPACA_API_KEY")
+API_SECRET = os.getenv("ALPACA_SECRET_KEY")
+BASE_URL = os.getenv("ALPACA_BASE_URL")
 
-# Streamlit UI
+# 🔌 Alpaca Clients
+data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
+trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
+
+# 🎯 Streamlit UI
 st.set_page_config(page_title="Trading-Bot (MA + RSI)", layout="centered")
-
 st.title("📈 Automatisierter Trading-Bot (MA + RSI)")
-symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL").upper()
 
-timeframes = {
-    "1Min": TimeFrame.Minute,
-    "5Min": TimeFrame.Minute,
-    "15Min": TimeFrame.Minute,
-    "1H": TimeFrame.Hour,
-    "1D": TimeFrame.Day
-}
-selected_tf = st.selectbox("⏱ Zeitrahmen", list(timeframes.keys()))
-timeframe = timeframes[selected_tf]
+# Eingabe
+symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
+
+# Nur 1D als Zeitrahmen erlauben
+st.selectbox("⏱ Zeitrahmen", ["1D"], index=0)
+st.info("📢 Nur Tagesdaten (1D) werden unterstützt – kostenloser IEX-Feed aktiv.")
 
 short_window = st.slider("📉 Kurzfristiger MA", min_value=5, max_value=50, value=10)
 long_window = st.slider("📈 Langfristiger MA", min_value=20, max_value=200, value=50)
 rsi_period = st.slider("📊 RSI-Periode", min_value=5, max_value=30, value=14)
-order_qty = st.number_input("🍩 Order-Menge", min_value=1, step=1, value=1)
+order_qty = st.number_input("📦 Order-Menge", min_value=1, value=1)
 
-if st.button("🔍 Analyse starten"):
-
+# Start-Button
+if st.button("🔎 Analyse starten"):
     try:
-        # Alpaca Clients
-        data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-        trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+        end_date = datetime.now(pytz.UTC)
+        start_date = end_date - timedelta(days=365)
 
-        # Zeitbereich
-        end_date = datetime.datetime.utcnow()
-        start_date = end_date - datetime.timedelta(days=100)
-
-        # Daten anfragen mit feed='iex'
-        request_params = StockBarsRequest(
+        # 📊 Hole historische Tagesdaten mit feed='iex'
+        request = StockBarsRequest(
             symbol_or_symbols=[symbol],
-            timeframe=timeframe,
+            timeframe=TimeFrame.Day,
             start=start_date,
             end=end_date,
-            feed="iex"  # kostenloses Feed
+            feed="iex"
         )
-
-        bars = data_client.get_stock_bars(request_params).df
+        bars = data_client.get_stock_bars(request).df
 
         if bars.empty:
-            st.error("⚠️ Keine Daten gefunden. Versuche einen anderen Zeitraum oder Ticker.")
+            st.error("❌ Keine Daten gefunden – bitte Symbol prüfen.")
         else:
-            bars = bars[bars.symbol == symbol]
+            df = bars[bars.index.get_level_values(0) == symbol].copy()
+            df["SMA_short"] = df["close"].rolling(window=short_window).mean()
+            df["SMA_long"] = df["close"].rolling(window=long_window).mean()
+            df["RSI"] = ta.momentum.RSIIndicator(df["close"], window=rsi_period).rsi()
 
-            bars['SMA_short'] = bars['close'].rolling(window=short_window).mean()
-            bars['SMA_long'] = bars['close'].rolling(window=long_window).mean()
+            latest = df.iloc[-1]
+            previous = df.iloc[-2]
 
-            delta = bars['close'].diff()
-            gain = delta.where(delta > 0, 0)
-            loss = -delta.where(delta < 0, 0)
-            avg_gain = gain.rolling(window=rsi_period).mean()
-            avg_loss = loss.rolling(window=rsi_period).mean()
-            rs = avg_gain / avg_loss
-            bars['RSI'] = 100 - (100 / (1 + rs))
-
-            # Plot
-            fig, ax = plt.subplots(figsize=(12, 6))
-            ax.plot(bars.index, bars['close'], label='Kurs')
-            ax.plot(bars.index, bars['SMA_short'], label=f'MA {short_window}')
-            ax.plot(bars.index, bars['SMA_long'], label=f'MA {long_window}')
-            ax.set_title(f"{symbol} - Kurs mit MA")
+            # 📈 Visualisierung
+            st.subheader("📊 Kursdiagramm")
+            fig, ax = plt.subplots()
+            ax.plot(df.index, df["close"], label="Close")
+            ax.plot(df.index, df["SMA_short"], label=f"MA {short_window}")
+            ax.plot(df.index, df["SMA_long"], label=f"MA {long_window}")
             ax.legend()
             st.pyplot(fig)
 
-            # RSI Plot
-            fig2, ax2 = plt.subplots(figsize=(12, 3))
-            ax2.plot(bars.index, bars['RSI'], color='purple', label='RSI')
-            ax2.axhline(70, color='red', linestyle='--', label='Overbought')
-            ax2.axhline(30, color='green', linestyle='--', label='Oversold')
-            ax2.set_title("RSI")
+            # 📊 RSI Plot
+            st.subheader("📉 RSI-Indikator")
+            fig2, ax2 = plt.subplots()
+            ax2.plot(df.index, df["RSI"], label="RSI", color="purple")
+            ax2.axhline(70, color='red', linestyle='--')
+            ax2.axhline(30, color='green', linestyle='--')
             ax2.legend()
             st.pyplot(fig2)
 
-            # Signal logik
-            last = bars.iloc[-1]
-            signal = None
+            # 📋 Strategie-Logik
             if (
-                last['SMA_short'] > last['SMA_long']
-                and last['RSI'] < 30
+                previous["SMA_short"] < previous["SMA_long"]
+                and latest["SMA_short"] > latest["SMA_long"]
+                and latest["RSI"] < 70
             ):
-                signal = "buy"
-            elif (
-                last['SMA_short'] < last['SMA_long']
-                and last['RSI'] > 70
-            ):
-                signal = "sell"
+                st.success("🟢 Kaufsignal erkannt – Order wird gesendet...")
 
-            if signal:
-                st.success(f"📢 Signal erkannt: {signal.upper()}")
+                order = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=order_qty,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY
+                )
+                response = trading_client.submit_order(order)
+                st.write("✅ Order gesendet:", response)
 
-                try:
-                    order_data = MarketOrderRequest(
-                        symbol=symbol,
-                        qty=order_qty,
-                        side=OrderSide.BUY if signal == "buy" else OrderSide.SELL,
-                        time_in_force=TimeInForce.DAY
-                    )
-                    order = trading_client.submit_order(order_data)
-                    st.success(f"✅ Order ausgeführt: {order.side} {order.qty} {order.symbol}")
-                except Exception as e:
-                    st.error(f"❌ Order-Fehler: {e}")
+            elif latest["RSI"] > 70:
+                st.warning("🔴 RSI überkauft – kein Einstieg empfohlen.")
             else:
-                st.info("ℹ️ Kein klares Kaufs- oder Verkaufssignal.")
-
+                st.info("ℹ️ Kein Handelssignal aktuell.")
     except Exception as e:
         st.error(f"❌ Fehler: {e}")
