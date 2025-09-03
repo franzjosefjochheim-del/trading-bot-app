@@ -1,7 +1,6 @@
 streamlit
+alpaca-py==0.17.0
 pandas
-ta
-alpaca-py
-yfinance
-pytz
+numpy
 matplotlib
+python-dotenv
