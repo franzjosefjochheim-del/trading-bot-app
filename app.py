@@ -8,111 +8,121 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+import pytz
 
-# 🔑 API-Schlüssel (sicher in secrets.toml oder als ENV-Vars speichern)
+# 🔑 Alpaca API Keys (Paper Trading)
 ALPACA_API_KEY = "PKP5A2PXUW701XQZJIF5"
-ALPACA_SECRET_KEY = "b7hVdITr9PeHBVXQLsfJbimbprrUdPVtAhOHLQl7"
+ALPACA_SECRET_KEY = "b7hVdlTr9PeHBVXQLsfJbimbprrUdPVtAhOHLQI7"
 
-# 🧠 Clients initialisieren
-stock_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-crypto_client = CryptoHistoricalDataClient()
-trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+# 🌍 Zeitzone & Zeitraum
+timezone = pytz.timezone("America/New_York")
+end_date = datetime.now(tz=timezone)
+start_date = end_date - timedelta(days=2)
 
-# 📈 Zeitintervall-Mapping
+# 🕐 Gültige Zeitintervalle
 TIMEFRAME_MAP = {
     "1Min": TimeFrame.Minute,
-    "5Min": TimeFrame(5, TimeFrame.Unit.Minute),
-    "15Min": TimeFrame(15, TimeFrame.Unit.Minute),
+    "5Min": TimeFrame.Min5,
+    "15Min": TimeFrame.Min15,
     "1H": TimeFrame.Hour,
     "1D": TimeFrame.Day
 }
 
-# 🎯 Bollinger-Logik
-def calculate_bollinger_bands(df, window=20, num_std=2):
-    df['SMA'] = df['close'].rolling(window=window).mean()
-    df['STD'] = df['close'].rolling(window=window).std()
-    df['Upper'] = df['SMA'] + (num_std * df['STD'])
-    df['Lower'] = df['SMA'] - (num_std * df['STD'])
-    return df
+# 📉 Bollinger-Strategie
+def apply_bollinger_bands(df):
+    df['SMA'] = df['close'].rolling(window=20).mean()
+    df['STD'] = df['close'].rolling(window=20).std()
+    df['Upper'] = df['SMA'] + 2 * df['STD']
+    df['Lower'] = df['SMA'] - 2 * df['STD']
 
-# 📦 Handelslogik
-def check_signals_and_trade(df, symbol):
-    latest = df.iloc[-1]
-    if latest['close'] > latest['Upper']:
-        place_order(symbol, OrderSide.SELL)
-        return "🔻 SELL Signal erkannt"
-    elif latest['close'] < latest['Lower']:
-        place_order(symbol, OrderSide.BUY)
-        return "🟢 BUY Signal erkannt"
-    return "⚪ Kein Signal"
+    last_price = df['close'].iloc[-1]
+    lower_band = df['Lower'].iloc[-1]
+    upper_band = df['Upper'].iloc[-1]
 
-# 🛒 Order auslösen
-def place_order(symbol, side):
-    try:
-        order = MarketOrderRequest(
-            symbol=symbol,
-            qty=1,
-            side=side,
-            time_in_force=TimeInForce.GTC
-        )
-        trading_client.submit_order(order)
-        st.success(f"{side.name} Order platziert für {symbol}")
-    except Exception as e:
-        st.error(f"Fehler bei Orderplatzierung: {e}")
-
-# 📊 Daten holen
-def get_data(symbol, start_date, end_date, timeframe):
-    tf = TIMEFRAME_MAP.get(timeframe)
-    if "USD" in symbol:
-        request = CryptoBarsRequest(
-            symbol=symbol,
-            timeframe=tf,
-            start=start_date,
-            end=end_date
-        )
-        bars = crypto_client.get_crypto_bars(request).df
+    if last_price < lower_band:
+        return "buy"
+    elif last_price > upper_band:
+        return "sell"
     else:
-        request = StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=tf,
-            start=start_date,
-            end=end_date
-        )
-        bars = stock_client.get_stock_bars(request).df
-    return bars
+        return "hold"
 
-# 🎨 Plot
-def plot_chart(df, symbol):
-    plt.figure(figsize=(12, 6))
-    plt.plot(df.index, df['close'], label='Kurs')
-    plt.plot(df.index, df['Upper'], label='Upper Band', linestyle='--')
-    plt.plot(df.index, df['Lower'], label='Lower Band', linestyle='--')
-    plt.title(f"{symbol} Bollinger Bands")
-    plt.xlabel("Zeit")
-    plt.ylabel("Preis")
-    plt.legend()
-    st.pyplot(plt)
+# 📦 Order platzieren
+def place_order(symbol, action):
+    if action not in ["buy", "sell"]:
+        return
 
-# 🚀 Streamlit UI
+    trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+
+    order = MarketOrderRequest(
+        symbol=symbol,
+        qty=1,
+        side=OrderSide.BUY if action == "buy" else OrderSide.SELL,
+        time_in_force=TimeInForce.DAY
+    )
+
+    try:
+        result = trading_client.submit_order(order)
+        st.success(f"Order gesendet: {action.upper()} {symbol}")
+        st.json(result.model_dump())
+    except Exception as e:
+        st.error(f"Orderfehler: {e}")
+
+# 📊 Daten abrufen
+def get_data(symbol, timeframe_str):
+    tf = TIMEFRAME_MAP.get(timeframe_str)
+
+    try:
+        if "/" in symbol:  # Krypto
+            client = CryptoHistoricalDataClient()
+            request = CryptoBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=tf,
+                start=start_date,
+                end=end_date
+            )
+            bars = client.get_crypto_bars(request).df
+        else:  # Aktien
+            client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=tf,
+                start=start_date,
+                end=end_date
+            )
+            bars = client.get_stock_bars(request).df
+
+        df = bars[bars['symbol'] == symbol].copy()
+        df = df.reset_index()
+        return df
+
+    except Exception as e:
+        st.error(f"Fehler beim Abrufen von {symbol}-Daten: {e}")
+        return pd.DataFrame()
+
+# 🎯 UI
 st.set_page_config(page_title="Trading Bot mit Bollinger Bands", layout="centered")
 st.title("📊 Trading Bot mit Bollinger Bands")
 
-symbol = st.selectbox("Wähle ein Symbol", ["AAPL", "MSFT", "BTC/USD", "ETH/USD"])
-selected_timeframe = st.selectbox("Zeitintervall", list(TIMEFRAME_MAP.keys()))
-start_date = datetime.now() - timedelta(days=5)
-end_date = datetime.now()
+symbol = st.selectbox("Wähle ein Symbol", ["BTC/USD", "AAPL", "TSLA", "ETH/USD"])
+timeframe = st.selectbox("Zeitintervall", list(TIMEFRAME_MAP.keys()))
 
 if st.button("🔍 Analyse starten"):
-    try:
-        bars = get_data(symbol, start_date, end_date, selected_timeframe)
-        if bars.empty:
-            st.warning("Keine Daten verfügbar.")
-        else:
-            if "symbol" in bars.columns:
-                bars = bars[bars['symbol'] == symbol]
-            bars = calculate_bollinger_bands(bars)
-            signal = check_signals_and_trade(bars, symbol.replace("/", ""))
-            st.info(signal)
-            plot_chart(bars, symbol)
-    except Exception as e:
-        st.error(f"Fehler beim Abrufen von {symbol}-Daten: {e}")
+    data = get_data(symbol, timeframe)
+
+    if data.empty:
+        st.warning("Keine Daten verfügbar.")
+    else:
+        action = apply_bollinger_bands(data)
+
+        st.subheader(f"Aktuelle Empfehlung: **{action.upper()}**")
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(data['timestamp'], data['close'], label='Preis', color='blue')
+        ax.plot(data['timestamp'], data['Upper'], label='Upper Band', linestyle='--', color='green')
+        ax.plot(data['timestamp'], data['Lower'], label='Lower Band', linestyle='--', color='red')
+        ax.set_title(f"{symbol} mit Bollinger Bands")
+        ax.legend()
+        st.pyplot(fig)
+
+        if action in ["buy", "sell"]:
+            place_order(symbol.split("/")[0] if "/" in symbol else symbol, action)
