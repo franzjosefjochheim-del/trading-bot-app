@@ -11,25 +11,27 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 import os
 
-# --- Zugriff auf Umgebungsvariablen ---
+# Alpaca API-Zugangsdaten
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
-# --- Alpaca-Clients initialisieren ---
+# Alpaca-Clients
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 
-# --- Streamlit UI Setup ---
+# Streamlit-Seitenlayout
 st.set_page_config(page_title="Trading Bot (MA + RSI)", layout="centered")
 st.title("📉 Automatisierter Trading-Bot (MA + RSI)")
 
+# Benutzeroberfläche
 symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
 
+# ✅ RICHTIGE TimeFrame-Zuweisung
 timeframes = {
     "1Min": TimeFrame.Minute,
-    "5Min": TimeFrame(5, TimeFrame.Unit.Minute),
-    "15Min": TimeFrame(15, TimeFrame.Unit.Minute),
+    "5Min": TimeFrame.Minute5,
+    "15Min": TimeFrame.Minute15,
     "1H": TimeFrame.Hour,
     "1D": TimeFrame.Day,
 }
@@ -43,11 +45,9 @@ qty = st.number_input("📃 Order-Menge", min_value=1, value=1)
 
 if st.button("🔍 Analyse starten") and symbol:
     try:
-        # 📅 Datenabrufzeitraum festlegen
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=60)
 
-        # 📥 Daten abrufen
         request_params = StockBarsRequest(
             symbol_or_symbols=[symbol],
             timeframe=timeframe,
@@ -64,6 +64,7 @@ if st.button("🔍 Analyse starten") and symbol:
             df["SMA_short"] = df.close.rolling(window=short_window).mean()
             df["SMA_long"] = df.close.rolling(window=long_window).mean()
 
+            # RSI berechnen
             delta = df.close.diff()
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
@@ -72,7 +73,7 @@ if st.button("🔍 Analyse starten") and symbol:
             rs = avg_gain / avg_loss
             df["RSI"] = 100 - (100 / (1 + rs))
 
-            # 📈 Plotten
+            # Charts anzeigen
             st.subheader(f"Kursverlauf & Indikatoren für {symbol}")
             fig, ax = plt.subplots(figsize=(10, 6))
             ax.plot(df.close, label="Kurs")
@@ -82,14 +83,13 @@ if st.button("🔍 Analyse starten") and symbol:
             ax.legend()
             st.pyplot(fig)
 
-            # 📊 RSI anzeigen
             st.line_chart(df["RSI"])
 
-            # ✅ Trading-Signale prüfen
+            # Trading-Signale
             last_row = df.iloc[-1]
             prev_row = df.iloc[-2]
-
             signal = ""
+
             if (
                 prev_row["SMA_short"] < prev_row["SMA_long"]
                 and last_row["SMA_short"] > last_row["SMA_long"]
@@ -104,8 +104,7 @@ if st.button("🔍 Analyse starten") and symbol:
                 signal = "SELL"
 
             if signal:
-                st.success(f"📢 Trading-Signal erkannt: {signal}")
-
+                st.success(f"📢 Signal erkannt: {signal}")
                 try:
                     order = MarketOrderRequest(
                         symbol=symbol,
@@ -116,7 +115,7 @@ if st.button("🔍 Analyse starten") and symbol:
                     response = trading_client.submit_order(order)
                     st.success(f"✅ Order ausgeführt: {response.id}")
                 except Exception as e:
-                    st.error(f"❌ Orderfehler: {e}")
+                    st.error(f"❌ Fehler bei Orderausführung: {e}")
             else:
                 st.info("ℹ️ Kein klares Signal erkannt – keine Aktion durchgeführt.")
 
