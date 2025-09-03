@@ -7,103 +7,104 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from ta.trend import SMAIndicator
+from ta.momentum import RSIIndicator
 from datetime import datetime, timedelta
-import pytz
 import os
 from dotenv import load_dotenv
-import ta
 
-# 🔐 Lade Umgebungsvariablen
+# .env laden
 load_dotenv()
+
+# Alpaca API-Keys
 API_KEY = os.getenv("ALPACA_API_KEY")
-API_SECRET = os.getenv("ALPACA_SECRET_KEY")
-BASE_URL = os.getenv("ALPACA_BASE_URL")
+SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
-# 🔌 Alpaca Clients
-data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
-trading_client = TradingClient(API_KEY, API_SECRET, paper=True)
+# Clients
+data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 
-# 🎯 Streamlit UI
-st.set_page_config(page_title="Trading-Bot (MA + RSI)", layout="centered")
+# Streamlit UI
+st.set_page_config(page_title="Trading-Bot", layout="centered")
 st.title("📈 Automatisierter Trading-Bot (MA + RSI)")
 
-# Eingabe
+# Benutzer-Eingaben
 symbol = st.text_input("🔍 Tickersymbol eingeben", value="AAPL")
 
-# Nur 1D als Zeitrahmen erlauben
-st.selectbox("⏱ Zeitrahmen", ["1D"], index=0)
-st.info("📢 Nur Tagesdaten (1D) werden unterstützt – kostenloser IEX-Feed aktiv.")
+st.selectbox("🕰️ Zeitrahmen", options=["1D"], index=0, disabled=True)
+st.info("📉 Nur Tagesdaten (1D) werden unterstützt – kostenloser IEX-Feed aktiv.")
 
-short_window = st.slider("📉 Kurzfristiger MA", min_value=5, max_value=50, value=10)
-long_window = st.slider("📈 Langfristiger MA", min_value=20, max_value=200, value=50)
-rsi_period = st.slider("📊 RSI-Periode", min_value=5, max_value=30, value=14)
-order_qty = st.number_input("📦 Order-Menge", min_value=1, value=1)
+short_window = st.slider("🧪 Kurzfristiger MA", min_value=5, max_value=50, value=10)
+long_window = st.slider("🧪 Langfristiger MA", min_value=20, max_value=200, value=50)
+rsi_period = st.slider("📊 RSI-Periode", min_value=2, max_value=50, value=14)
+order_qty = st.number_input("🥜 Order-Menge", min_value=1, value=1, step=1)
 
-# Start-Button
-if st.button("🔎 Analyse starten"):
+if st.button("🔍 Analyse starten"):
     try:
-        end_date = datetime.now(pytz.UTC)
-        start_date = end_date - timedelta(days=365)
-
-        # 📊 Hole historische Tagesdaten mit feed='iex'
-        request = StockBarsRequest(
-            symbol_or_symbols=[symbol],
+        # Daten abrufen
+        end = datetime.now()
+        start = end - timedelta(days=365)
+        bars_request = StockBarsRequest(
+            symbol_or_symbols=symbol,
             timeframe=TimeFrame.Day,
-            start=start_date,
-            end=end_date,
-            feed="iex"
+            start=start,
+            end=end,
+            feed="iex"  # wichtig für kostenlose Nutzer
         )
-        bars = data_client.get_stock_bars(request).df
+
+        bars = data_client.get_stock_bars(bars_request).df
 
         if bars.empty:
-            st.error("❌ Keine Daten gefunden – bitte Symbol prüfen.")
+            st.error("Keine Daten gefunden. Symbol korrekt?")
         else:
             df = bars[bars.index.get_level_values(0) == symbol].copy()
-            df["SMA_short"] = df["close"].rolling(window=short_window).mean()
-            df["SMA_long"] = df["close"].rolling(window=long_window).mean()
-            df["RSI"] = ta.momentum.RSIIndicator(df["close"], window=rsi_period).rsi()
+            df.index = df.index.droplevel(0)
 
-            latest = df.iloc[-1]
-            previous = df.iloc[-2]
+            # Berechnungen
+            df["SMA_short"] = SMAIndicator(df["close"], window=short_window).sma_indicator()
+            df["SMA_long"] = SMAIndicator(df["close"], window=long_window).sma_indicator()
+            df["RSI"] = RSIIndicator(df["close"], window=rsi_period).rsi()
 
-            # 📈 Visualisierung
-            st.subheader("📊 Kursdiagramm")
-            fig, ax = plt.subplots()
-            ax.plot(df.index, df["close"], label="Close")
-            ax.plot(df.index, df["SMA_short"], label=f"MA {short_window}")
-            ax.plot(df.index, df["SMA_long"], label=f"MA {long_window}")
+            # Signale
+            last_row = df.iloc[-1]
+            signal = ""
+            if last_row["SMA_short"] > last_row["SMA_long"] and last_row["RSI"] < 70:
+                signal = "BUY"
+            elif last_row["SMA_short"] < last_row["SMA_long"] and last_row["RSI"] > 30:
+                signal = "SELL"
+            else:
+                signal = "HOLD"
+
+            # Ergebnis anzeigen
+            st.subheader("📈 Kursdiagramm")
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(df["close"], label="Kurs")
+            ax.plot(df["SMA_short"], label=f"SMA {short_window}")
+            ax.plot(df["SMA_long"], label=f"SMA {long_window}")
+            ax.set_title(f"{symbol} Kurs + MA")
             ax.legend()
             st.pyplot(fig)
 
-            # 📊 RSI Plot
-            st.subheader("📉 RSI-Indikator")
-            fig2, ax2 = plt.subplots()
-            ax2.plot(df.index, df["RSI"], label="RSI", color="purple")
-            ax2.axhline(70, color='red', linestyle='--')
-            ax2.axhline(30, color='green', linestyle='--')
-            ax2.legend()
-            st.pyplot(fig2)
+            st.subheader("🧠 Entscheidungslogik")
+            st.write(f"Aktueller RSI: {last_row['RSI']:.2f}")
+            st.write(f"Signal: **{signal}**")
 
-            # 📋 Strategie-Logik
-            if (
-                previous["SMA_short"] < previous["SMA_long"]
-                and latest["SMA_short"] > latest["SMA_long"]
-                and latest["RSI"] < 70
-            ):
-                st.success("🟢 Kaufsignal erkannt – Order wird gesendet...")
-
-                order = MarketOrderRequest(
+            # Order
+            if signal in ["BUY", "SELL"]:
+                side = OrderSide.BUY if signal == "BUY" else OrderSide.SELL
+                order_data = MarketOrderRequest(
                     symbol=symbol,
                     qty=order_qty,
-                    side=OrderSide.BUY,
+                    side=side,
                     time_in_force=TimeInForce.DAY
                 )
-                response = trading_client.submit_order(order)
-                st.write("✅ Order gesendet:", response)
-
-            elif latest["RSI"] > 70:
-                st.warning("🔴 RSI überkauft – kein Einstieg empfohlen.")
+                try:
+                    order = trading_client.submit_order(order_data)
+                    st.success(f"✅ Order ausgeführt: {order.side.upper()} {order.qty} {symbol}")
+                except Exception as e:
+                    st.error(f"❌ Orderfehler: {e}")
             else:
-                st.info("ℹ️ Kein Handelssignal aktuell.")
+                st.info("ℹ️ Kein Handelssignal. Keine Order ausgeführt.")
+
     except Exception as e:
-        st.error(f"❌ Fehler: {e}")
+        st.error(f"Fehler: {e}")
